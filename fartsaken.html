@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>THE FORSAKEN: RAGE MODE</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; color: #fff; user-select: none; }
+        canvas { display: block; }
+
+        /* --- UI & HUD --- */
+        #ui { position: absolute; top: 30px; left: 30px; pointer-events: none; z-index: 100; display: none; }
+        .stats-text { font-size: 32px; font-weight: 900; color: #ffff00; text-shadow: 3px 3px #000; }
+        .bar-bg { width: 250px; height: 14px; background: #111; border: 2px solid #444; margin-top: 8px; border-radius: 5px; overflow: hidden; }
+        #stamina-fill { width: 100%; height: 100%; background: #0f0; box-shadow: 0 0 10px #0f0; }
+        
+        #boss-ui { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); width: 70%; display: none; text-align: center; z-index: 100; }
+        #boss-hp-bg { width: 100%; height: 30px; background: #200; border: 3px solid #f00; border-radius: 15px; overflow: hidden; }
+        #boss-hp-fill { width: 100%; height: 100%; background: #f00; box-shadow: 0 0 20px #f00; transition: width 0.1s; }
+
+        /* --- GLITCH EFFECTS --- */
+        #glitch-overlay { position: absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:4000; display:none; mix-blend-mode: exclusion; background: repeating-linear-gradient(0deg, rgba(255,0,0,0.1), rgba(255,0,0,0.1) 1px, transparent 1px, transparent 2px); }
+        .glitch-text { position: absolute; color: #f00; font-weight: 900; font-size: 40px; display: none; z-index: 4500; pointer-events: none; }
+
+        /* --- MENUS --- */
+        .overlay { position: absolute; top:0; left:0; width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:2000; background: #000; }
+        .btn { padding: 20px 40px; border: 3px solid #555; cursor: pointer; background: rgba(255,255,255,0.05); text-align: center; width: 180px; transition: 0.3s; color: #fff; font-weight: bold; margin: 10px; }
+        .btn:hover { background: #fff; color: #000; transform: scale(1.1); }
+
+        #jumpscare { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; display: none; z-index: 5000; justify-content: center; align-items: center; }
+        #jumpscare-face { font-size: 400px; color: #f00; animation: vibrate 0.05s infinite; }
+        @keyframes vibrate { 0% { transform: translate(3px, 3px); } 50% { transform: translate(-3px, -3px); } }
+    </style>
+</head>
+<body id="game-body">
+
+    <div id="glitch-overlay"></div>
+    <div id="glitch-msg" class="glitch-text">SYSTEM FAILURE</div>
+
+    <div id="menu" class="overlay">
+        <h1 style="font-size:100px; color:red; text-shadow:0 0 30px red; margin:0;">FORSAKEN</h1>
+        <div style="display:flex;">
+            <div class="btn" onclick="startGame('easy', false)">EASY</div>
+            <div class="btn" onclick="startGame('normal', false)">NORMAL</div>
+            <div class="btn" onclick="startGame('hard', false)">HARD</div>
+            <div class="btn" style="border-color:red" onclick="startGame('hard', true)">HARDCORE</div>
+        </div>
+    </div>
+
+    <div id="ui">
+        <div style="color:#0ff; font-weight:bold;">LVL <span id="lvl-num">1</span>: <span id="lvl-name"></span></div>
+        <div class="stats-text" id="goal-text">FRAGMENTS: <span id="k-score">0</span>/5</div>
+        <div class="bar-bg"><div id="stamina-fill"></div></div>
+    </div>
+
+    <div id="boss-ui">
+        <div id="boss-name" style="color:red; font-size:24px; font-weight:bold;">OVERLORD</div>
+        <div id="boss-hp-bg"><div id="boss-hp-fill"></div></div>
+        <div id="lives-text" style="font-size:20px; margin-top:5px;">LIVES: ❤️❤️❤️</div>
+    </div>
+
+    <div id="death-screen" class="overlay" style="display:none;">
+        <h1 style="color:red; font-size:80px;">REBOOTING...</h1>
+        <button class="btn" onclick="location.reload()">MAIN MENU</button>
+    </div>
+
+    <div id="jumpscare"><div id="jumpscare-face">†</div></div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+
+        let gameStarted = false, currentLevel = 1, isGameOver = false, isHardcore = false;
+        let difficulty = 'normal', keysFound = 0, stamina = 100, bossHP = 10000, playerLives = 3;
+        let drownLevel = 0, portalActive = false, isRage = false, abilityTimer = 0;
+        
+        const player = { x: 100, y: 100, size: 20, speed: 5.8 };
+        const killer = { x: 0, y: 0, size: 35, speed: 3 };
+        const portal = { x: 0, y: 0 };
+        const mouse = { x: 0, y: 0 };
+        let walls = [], worldItems = [], bullets = [], strikes = [];
+        const keysPressed = {};
+
+        window.onmousemove = (e) => { mouse.x = e.clientX; mouse.y = e.clientY; };
+        window.onkeydown = (e) => keysPressed[e.code] = true;
+        window.onkeyup = (e) => keysPressed[e.code] = false;
+        window.onmousedown = () => { if(currentLevel === 8 && gameStarted && !isGameOver) fire(); };
+
+        function startGame(m, hc) {
+            difficulty = m; isHardcore = hc; gameStarted = true;
+            document.getElementById('menu').style.display = 'none';
+            document.getElementById('ui').style.display = 'block';
+            initLevel(1); loop();
+        }
+
+        function initLevel(lvl) {
+            currentLevel = lvl; isGameOver = false; keysFound = 0; drownLevel = 0;
+            portalActive = (lvl === 7); isRage = false; bullets = []; strikes = [];
+            
+            document.getElementById('lvl-num').innerText = lvl;
+            document.getElementById('boss-ui').style.display = (lvl === 8) ? 'block' : 'none';
+            document.getElementById('glitch-overlay').style.display = 'none';
+
+            player.x = 100; player.y = 100;
+            killer.x = canvas.width - 150; killer.y = canvas.height - 150;
+            killer.speed = {easy:1.8, normal:3.2, hard:5}[difficulty] + (lvl*0.1);
+            
+            buildWalls(lvl);
+        }
+
+        function buildWalls(lvl) {
+            walls = []; worldItems = [];
+            const w = canvas.width, h = canvas.height;
+            walls.push({x:0, y:0, w:w, h:20}, {x:0, y:h-20, w:w, h:20}, {x:0, y:0, w:20, h:h}, {x:w-20, y:0, w:20, h:h});
+
+            if(lvl === 7) {
+                for(let i=0; i<w; i+=300) {
+                    walls.push({x: i+150, y: 0, w: 50, h: h-200}, {x: i+300, y: 200, w: 50, h: h});
+                }
+                portal.x = w-100; portal.y = h-100; portalActive = true;
+            } else if (lvl === 8) {
+                player.y = h-100;
+            } else {
+                for(let i=0; i<5; i++) worldItems.push({x: 200+Math.random()*(w-400), y: 200+Math.random()*(h-400), active: false});
+                portal.x = w/2; portal.y = h/2;
+            }
+        }
+
+        function checkCol(nx, ny) {
+            return walls.some(w => nx+15 > w.x && nx-15 < w.x+w.w && ny+15 > w.y && ny-15 < w.y+w.h);
+        }
+
+        function fire() {
+            let angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+            bullets.push({x: player.x, y: player.y, vx: Math.cos(angle)*15, vy: Math.sin(angle)*15});
+        }
+
+        function die() {
+            if(currentLevel === 8 && playerLives > 1) {
+                playerLives--;
+                document.getElementById('lives-text').innerText = "LIVES: " + "❤️".repeat(playerLives);
+                player.x = canvas.width/2; player.y = canvas.height - 100;
+                return;
+            }
+            isGameOver = true;
+            document.getElementById('jumpscare').style.display = 'flex';
+            setTimeout(() => { document.getElementById('death-screen').style.display = 'flex'; }, 800);
+        }
+
+        function update() {
+            if(!gameStarted || isGameOver) return;
+
+            let s = player.speed * (keysPressed['ShiftLeft'] && stamina > 0 ? 1.7 : 1);
+            if(keysPressed['ShiftLeft'] && stamina > 0) stamina -= 0.6; else stamina = Math.min(100, stamina + 0.3);
+
+            if(keysPressed['KeyW'] && !checkCol(player.x, player.y - s)) player.y -= s;
+            if(keysPressed['KeyS'] && !checkCol(player.x, player.y + s)) player.y += s;
+            if(keysPressed['KeyA'] && !checkCol(player.x - s, player.y)) player.x -= s;
+            if(keysPressed['KeyD'] && !checkCol(player.x + s, player.y)) player.x += s;
+
+            // KILLER SLIDING AI (Fixed Stucking)
+            let dx = player.x - killer.x, dy = player.y - killer.y, dist = Math.hypot(dx, dy);
+            let vx = (dx/dist) * killer.speed, vy = (dy/dist) * killer.speed;
+            
+            if(!checkCol(killer.x + vx, killer.y)) killer.x += vx;
+            if(!checkCol(killer.x, killer.y + vy)) killer.y += vy;
+            if(dist < 32) die();
+
+            // GLITCH TEXT LOGIC
+            let gMsg = document.getElementById('glitch-msg');
+            if(dist < 200) {
+                gMsg.style.display = 'block'; gMsg.style.left = Math.random()*80+'%'; gMsg.style.top = Math.random()*80+'%';
+            } else { gMsg.style.display = 'none'; }
+
+            if(currentLevel === 7) {
+                drownLevel += 0.05;
+                if(drownLevel >= 100) die();
+            }
+
+            if(currentLevel === 8) {
+                if(bossHP < 5000 && !isRage) { 
+                    isRage = true; killer.speed *= 1.5; 
+                    document.getElementById('glitch-overlay').style.display = 'block';
+                    document.getElementById('boss-name').innerText = "RAGE OVERLORD";
+                }
+
+                // Ability: Orbital Strike
+                if(isRage) {
+                    abilityTimer++;
+                    if(abilityTimer % 60 === 0) strikes.push({x: player.x, y: player.y, timer: 40});
+                }
+
+                strikes.forEach((st, i) => {
+                    st.timer--;
+                    if(st.timer === 0) {
+                        if(Math.hypot(player.x - st.x, player.y - st.y) < 60) die();
+                        strikes.splice(i, 1);
+                    }
+                });
+
+                bullets.forEach((b, i) => {
+                    b.x += b.vx; b.y += b.vy;
+                    if(b.y < 200 && Math.abs(b.x - canvas.width/2) < 200) {
+                        bossHP -= 50; bullets.splice(i, 1);
+                        document.getElementById('boss-hp-fill').style.width = (bossHP/10000)*100 + "%";
+                    }
+                    if(b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) bullets.splice(i, 1);
+                });
+
+                if(bossHP <= 0) { alert("YOU KILLED THE FORSAKEN!"); location.reload(); }
+            }
+
+            worldItems.forEach(it => {
+                if(!it.active && Math.hypot(player.x-it.x, player.y-it.y) < 40) {
+                    it.active = true; keysFound++; document.getElementById('k-score').innerText = keysFound;
+                    if(keysFound >= 5) portalActive = true;
+                }
+            });
+
+            if(portalActive && Math.hypot(player.x-portal.x, player.y-portal.y) < 60) initLevel(currentLevel+1);
+            document.getElementById('stamina-fill').style.width = stamina + "%";
+        }
+
+        function draw() {
+            ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            if(currentLevel === 7) {
+                ctx.fillStyle = "rgba(0, 100, 255, 0.3)";
+                ctx.fillRect(0, canvas.height*(1-drownLevel/100), canvas.width, canvas.height);
+            }
+
+            walls.forEach(w => { ctx.fillStyle = "#222"; ctx.fillRect(w.x, w.y, w.w, w.h); });
+            worldItems.forEach(it => { if(!it.active) { ctx.fillStyle = "yellow"; ctx.beginPath(); ctx.arc(it.x, it.y, 10, 0, Math.PI*2); ctx.fill(); }});
+
+            if(portalActive) {
+                ctx.strokeStyle = "#0ff"; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(portal.x, portal.y, 50, 0, Math.PI*2); ctx.stroke();
+            }
+
+            if(currentLevel === 8) {
+                ctx.fillStyle = isRage ? "#f00" : "#500";
+                ctx.fillRect(canvas.width/2 - 200, 50, 400, 150);
+                bullets.forEach(b => { ctx.fillStyle = "#0ff"; ctx.fillRect(b.x, b.y, 5, 5); });
+                
+                strikes.forEach(st => {
+                    ctx.strokeStyle = "red"; ctx.lineWidth = 2;
+                    ctx.beginPath(); ctx.arc(st.x, st.y, 60 * (st.timer/40), 0, Math.PI*2); ctx.stroke();
+                });
+            }
+
+            ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(killer.x, killer.y, 18, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "white"; ctx.fillRect(player.x-11, player.y-11, 22, 22);
+        }
+
+        function loop() { update(); draw(); requestAnimationFrame(loop); }
+    </script>
+</body>
+</html>
